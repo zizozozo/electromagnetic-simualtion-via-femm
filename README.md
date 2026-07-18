@@ -4,7 +4,7 @@
 This project delivers an automated structural and physical optimization tool written in Python,
 leveraging the FEMM (Finite Element Method Magnetics) core solver API via the pyfemm
 library. The primary objective is to evaluate the mitigation of eddy current losses (Joule heating)
-in rotary braking systems by introducing radial slots into a conductive aluminum disk.
+in rotary braking systems by introducing **radial slots** into a conductive aluminum disk.
 
 
 ## 2. Theoretical Overview
