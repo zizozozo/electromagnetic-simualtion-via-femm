@@ -1,5 +1,5 @@
 
-# Parametric Simulation of Electromagnetic Braking Systems via Finite Element Analysis
+# Parametric Simulation of Electromagnetic Braking Systems via Finite Element Analysis (slotted disc)
 ## 1. Project Overview
 This project delivers an automated structural and physical optimization tool written in Python,
 leveraging the FEMM (Finite Element Method Magnetics) core solver API via the pyfemm
