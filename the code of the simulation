@@ -1,0 +1,154 @@
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import femm
+
+# 1. CONFIGURATION AND PARAMETERS (in mm)
+chemin_dossier = os.path.join(os.path.expanduser("~"), "Documents", "TIPE_Simulation")
+os.makedirs(chemin_dossier, exist_ok=True)
+os.chdir(chemin_dossier)
+
+R_int, R_ext = 30, 150
+R_fente_in, R_fente_out, W_fente = 45, 135, 2
+epaisseur = 5
+liste_N_fentes = [0, 2, 4, 8, 16]
+resultats_puissance = {}
+
+# --- FEMM INITIALIZATION ---
+femm.openfemm()  # Launches the FEMM core application window in the background
+
+# 2. FEMM SIMULATION LOOP
+for N in liste_N_fentes:
+    # --- DOCUMENT CREATION ---
+    femm.newdocument(3)  # Opens a blank document type 3: "Current Flow" (Electrokinetic Conduction)
+    
+    # Global problem property settings:
+    # "millimeters" = Working units
+    # "planar" = 2D planar problem formulation
+    # 0 = Current frequency (0 for Direct Current / DC)
+    # 1e-8 = Solver precision tolerance
+    # epaisseur = Depth of the structure along the Z-axis (here 5 mm)
+    # 30 = Minimum constraint angle for mesh triangulation
+    femm.ci_probdef("millimeters", "planar", 0, 1e-8, epaisseur, 30)
+    
+    # Add materials to the active project library: (Name, conductivity x, conductivity y, angle)
+    femm.ci_addmaterial("Aluminium", 37.7e6, 37.7e6, 0)
+    femm.ci_addmaterial("Air", 1e-12, 1e-12, 0) # Air assigned near-zero electrical conductivity
+    
+    # --- A. DISK BOUNDARY SKELETON GEOMETRY ---
+    for r in [R_int, R_ext, -R_int, -R_ext]: 
+        femm.ci_addnode(r, 0)  # Generates a geometric vertex (Node) at coordinates (x = r, y = 0)
+        
+    femm.ci_addsegment(R_int, 0, R_ext, 0)   # Connects point (R_int,0) to point (R_ext,0) with a straight line segment
+    femm.ci_addsegment(-R_int, 0, -R_ext, 0) # Connects point (-R_int,0) to point (-R_ext,0) with a straight line segment
+    
+    # Functions ci_addarc(x1, y1, x2, y2, angle, maxseg) draw 180-degree semicircles:
+    femm.ci_addarc(R_ext, 0, -R_ext, 0, 180, 1)  # Outer upper arc
+    femm.ci_addarc(-R_ext, 0, R_ext, 0, 180, 1)  # Outer lower arc
+    femm.ci_addarc(R_int, 0, -R_int, 0, 180, 1)  # Inner upper arc
+    femm.ci_addarc(-R_int, 0, R_int, 0, 180, 1)  # Inner lower arc
+
+    # --- B. RADIAL SLOT GEOMETRY (Coordinate Transformation via Rotation) ---
+    if N > 0:
+        espacement_angle = (2 * np.pi) / N  # Angular distance between the centers of two consecutive slots
+        for i in range(N):
+            # EXPLANATION: Adding '+ (espacement_angle / 2)' offsets the initial slot position.
+            # This prevents boundaries from overlapping on the Y=0 axis line where BCs are defined, avoiding mesh singularities.
+            theta = i * espacement_angle + (espacement_angle / 2)
+            cos_t, sin_t = np.cos(theta), np.sin(theta)
+            
+            # ROTATION MATRIX EXPLANATION: Computes the (x,y) coordinates of the 4 corners of a rectangular slot
+            # of width W_fente inclined at angle theta: x = x0*cos(t) - y0*sin(t) and y = x0*sin(t) + y0*cos(t)
+            pts = [
+                (R_fente_in * cos_t - (W_fente / 2) * sin_t, R_fente_in * sin_t + (W_fente / 2) * cos_t),   # Inner-Top corner
+                (R_fente_in * cos_t + (W_fente / 2) * sin_t, R_fente_in * sin_t - (W_fente / 2) * cos_t),   # Inner-Bottom corner
+                (R_fente_out * cos_t + (W_fente / 2) * sin_t, R_fente_out * sin_t - (W_fente / 2) * cos_t), # Outer-Bottom corner
+                (R_fente_out * cos_t - (W_fente / 2) * sin_t, R_fente_out * sin_t + (W_fente / 2) * cos_t)  # Outer-Top corner
+            ]
+            
+            for pt in pts: 
+                femm.ci_addnode(pt[0], pt[1])  # Places the 4 vertices of the current slot
+                
+            # MODULO 4 EXPLANATION: Connects vertices (0 to 1), (1 to 2), (2 to 3).
+            # When j=3, (3+1)%4 evaluates to 0, closing the slot rectangle back to its starting point.
+            for j in range(4): 
+                femm.ci_addsegment(pts[j][0], pts[j][1], pts[(j+1)%4][0], pts[(j+1)%4][1]) # Draws segments to close the rectangle
+                
+            # Assigning "Air" material properties inside the slot boundary:
+            x_air, y_air = ((R_fente_in + R_fente_out) / 2) * cos_t, ((R_fente_in + R_fente_out) / 2) * sin_t
+            femm.ci_addblocklabel(x_air, y_air)    # Places an identification label (Block Label) at the slot center
+            femm.ci_selectlabel(x_air, y_air)     # Graphically selects this label for editing
+            femm.ci_setblockprop("Air", 0, 0, 0)   # Assigns "Air" material attributes to the selected slot area
+            femm.ci_clearselected()                # Deselects all objects to prevent leaking properties to subsequent steps
+
+    # --- C. BOUNDARY CONDITIONS (ELECTRIC POTENTIALS V) ---
+    # Creates two boundary property definitions acting as fixed voltage conductors:
+    femm.ci_addboundprop("V_Input", 1, 0, 0, 0, 0)   # Sets a boundary segment fixed at 1 Volt
+    femm.ci_addboundprop("V_Output", 0, 0, 0, 0, 0)  # Sets a boundary segment fixed at 0 Volts (Ground)
+    
+    # Apply input voltage on the upper horizontal segment dividing the two radii:
+    femm.ci_selectsegment((R_int + R_ext) / 2, 0)              # Selects the right segment
+    femm.ci_setsegmentprop("V_Input", 0, 1, 0, 0, "")          # Imposes the "V_Input" boundary condition (1 V)
+    femm.ci_clearselected()                                    # Clears the active selection
+    
+    # Apply output voltage on the lower horizontal segment:
+    femm.ci_selectsegment(-(R_int + R_ext) / 2, 0)             # Selects the left segment
+    femm.ci_setsegmentprop("V_Output", 0, 1, 0, 0, "")         # Imposes the "V_Output" boundary condition (0 V)
+    femm.ci_clearselected()                                    # Clears the active selection
+    
+    # --- D. MATERIAL ZONE ASSIGNMENTS FOR THE DISK SUBSTRATE ---
+    y_mat = (R_ext + R_fente_out) / 2
+    for y in [y_mat, -y_mat]: 
+        femm.ci_addblocklabel(0, y)            # Places block labels inside the metallic volume of the disk (Top and Bottom halves)
+        femm.ci_selectlabel(0, y)              # Selects the active label
+        femm.ci_setblockprop("Aluminium", 0, 0, 0) # Assigns "Aluminium" physical properties to the core disk volume
+        femm.ci_clearselected()                # Deselects
+        
+    # Central hole of the disk (The Axis core):
+    femm.ci_addblocklabel(0, 0)            # Places a block label at the exact geometric origin (0,0)
+    femm.ci_selectlabel(0, 0)              # Selects this central label
+    femm.ci_setblockprop("Air", 0, 0, 0)   # Defines the central bore hole as empty space (filled with Air)
+    femm.ci_clearselected()                # Deselects
+
+    # --- E. SOLVER EXECUTION AND NUMERICAL INTEGRATION ---
+    # Saves the mesh geometry under the specified name (.fec format for Current Flow problems)
+    femm.ci_saveas(os.path.join(chemin_dossier, f"Disque_{N}_fentes.fec"))
+    femm.ci_smartmesh(1)       # Enables automatic smart mesh refinement
+    femm.ci_analyze()          # Launches the FEMM solver engine to compute electrokinetic PDEs
+    femm.ci_loadsolution()     # Automatically loads the completed solution file in the Post-Processor window
+    
+    # Select conductor regions for physical numerical volume integration:
+    femm.co_selectblock(0, y_mat)   # Selects the upper Aluminum block region within the post-processor view
+    femm.co_selectblock(0, -y_mat)  # Sequentially selects the lower Aluminum block region
+    
+    # Computes physical integration across all selected regions:
+    # Integral choice 0 specifies total integrated Joule heating power losses (expressed in Watts)
+    resultats_puissance[N] = femm.co_blockintegral(0)
+    
+    femm.co_clearblock()       # Flushes the selection buffer in the post-processor view
+    femm.co_close()            # Closes the active solution display window
+    femm.ci_close()            # Closes the current geometry design document
+
+# --- TERMINATING FEMM SYSTEM ---
+femm.closefemm()  # Safely closes down the background global FEMM software instance
+
+# 3. POST-PROCESSING AND VISUALIZATION VIA MATPLOTLIB
+P_ref = resultats_puissance[0]
+liste_eta = []
+for N in liste_N_fentes:
+    eta_val = resultats_puissance[N] / P_ref
+    liste_eta.append(eta_val)
+    print(f"Slots N = {N:>2} | Losses = {resultats_puissance[N]:.4e} W | \u03b7 = {eta_val:.4f}")
+
+plt.figure(figsize=(7, 4.5), dpi=100)
+plt.plot(liste_N_fentes, liste_eta, marker='o', linestyle='-', color='#1a73e8', linewidth=2, label=r'$\eta$')
+plt.title("Evolution of the Structural Efficiency Factor $\eta$")
+plt.xlabel("Number of Radial Slots ($N$)")
+plt.ylabel("Relative Efficiency $\eta = P_N / P_0$")
+plt.xticks(liste_N_fentes) 
+plt.ylim(0, 1.1) 
+plt.grid(True, linestyle='--', alpha=0.5) 
+plt.legend()
+plt.tight_layout()
+plt.savefig(os.path.join(chemin_dossier, "Courbe_Efficacite_Eta.png"), dpi=300)
+plt.show()
